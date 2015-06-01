@@ -371,7 +371,10 @@ class ADIntegrationPlugin {
 				add_action('edit_user_profile_update', array(&$this, 'profile_update'));
 		    }
 			
-
+			// User registration validation (ie: check ADS for pre-existing username or email).
+			add_filter('registration_errors', array(&$this, 'registration_errors'), 10, 3);
+			
+			
 			// TODO: auto_login feature must be tested
 			/*
 			if ($this->_auto_login) {
@@ -1461,7 +1464,115 @@ class ADIntegrationPlugin {
 		
 		return $value;
 	}	
+	
+	//	Function that checks if email already exists in ADS database.
+	//	Returns false on error, or the number of results matching the email in ADS.
+	public function check_email( $email = '' ) {
+	
+		if( empty($email) ) return false;
 		
+		// Log informations
+		$ad_username = $this->_bulkimport_user;
+		$ad_password = $this->_decrypt($this->_bulkimport_pwd);
+		//$ad_password = $this->_decrypt($this->_syncback_global_pwd);
+		$this->_log(ADI_LOG_INFO,"Username duplicate validation: Options for adLDAP connection:\n".
+					  "- base_dn: $this->_base_dn\n".
+					  "- domain_controllers: $this->_domain_controllers\n".
+					  "- ad_username: $ad_username\n".
+					  "- ad_password: **not shown**\n".
+					  "- ad_port: $this->_port\n".
+					  "- use_tls: ".(int) $this->_use_tls."\n".
+					  "- network timeout: ". $this->_network_timeout);
+					
+		try {
+			$ad =  @new adLDAP(array(
+									"base_dn" => $this->_base_dn, 
+									"domain_controllers" => explode(';', $this->_domain_controllers),
+									"ad_username" => $ad_username,      // AD Bind User
+									"ad_password" => $ad_password,      // password
+									"ad_port" => $this->_port,          // AD port
+									"use_tls" => $this->_use_tls,             		// secure?
+									"network_timeout" => $this->_network_timeout	// network timeout
+									));
+		} catch (Exception $e) {
+			$this->_log(ADI_LOG_ERROR,'adLDAP exception: ' . $e->getMessage());
+			$this->errors->add('wrong_domaincontroller_password',__('Error on reading additional attributes from another user on Active Directory. Wrong password?','ad-integration'),'');
+			return false; 
+		}
+		$this->_log(ADI_LOG_DEBUG,'Connected to AD');
+		
+		$entries = $ad->user_info($email);
+		
+		
+		//	Return number of entries found, or 0
+		//	NOTE:	user_info method returns false if no result found,
+		//			so return 0 instead of false to prevent scripts from thinking an error
+		//			occured.
+		if( isset($entries['count']) ) {
+			return $entries['count'];
+		}
+		else {
+			return 0;
+		}
+		
+	}
+	
+	//	Function that checks if username already exists in ADS database.
+	//	Note:	This method is an alias of the check_email method since the underlying
+	//			search function detects wheter the search needle is an email formatted
+	//			value or simply a username.
+	//	Returns false on error, or the number of results matching the email in ADS.
+	public function check_username( $username = '' ) {
+		return $this->check_email( $username );
+	}
+	
+	// Filter that voids username if it already exists in the external database table.
+	// Thus the caller that applied this filter prior to creating the username in WordPress
+	// will know it already exists.
+	public function can_create_username( $username = '' ) {
+	
+		if( empty($username) || $caller == "adi-auth" ) return;
+		if( $this->check_username($username) !== 0 ) $username = '';
+		
+	}
+	
+	// Filter that voids email if it already exists in the external database table.
+	// Thus the caller that applied this filter prior to creating the email in WordPress
+	// will know it already exists.
+	public function can_create_email( $email = '' ) {
+	
+		if( empty($email) || $caller == "adi-auth" ) return;
+		if( $this->check_email($email) !== 0 ) $email = '';
+		
+	}
+	
+	// User registration validation (ie: check ADS for pre-existing username or email).
+	public function registration_errors( $errors = NULL, $username = '', $email = '' ) {
+	
+		if( !is_object($errors) ) $errors = new WP_Error();
+		if( empty($username) ) $errors->add('pp_db_empty_username', __('Username must be provided.'));
+		if( empty($email) ) $errors->add('pp_db_empty_email', __('Email address must be provided.'));
+		
+		$result_user = $this->check_username($username);
+		$result_email = $this->check_email($email);
+		
+		if ( $result_user === false ) {
+			$errors->add('adi_access_error', __('Error while accessing ldap database for username.'));
+		}
+		elseif ( $result_user > 0 ) {
+			$errors->add('adi_username_exists', __('This username is already taken in ADS (' .$result_user. ').'));
+		}
+		elseif ( $result_email === false ) {
+			$errors->add('adi_access_error', __('Error while accessing ldap database for email.'));
+		}
+		elseif ( $result_email > 0 ) {
+			$errors->add('adi_access_error', __('This email address is already taken in ADS(' .$result_email. ').'));
+		}
+		
+		return $errors;
+		
+	}
+	
 	
 	/****************************************************************
 	 * STATIC FUNCTIONS
@@ -3228,6 +3339,7 @@ class ADIntegrationPlugin {
 	 * @param string $text data to encrypt
 	 */
 	protected function _encrypt($text) {
+		/*
 		if (function_exists('mcrypt_encrypt')) {
 		    $iv = md5('Active-Directory-Integration'); // not nice
 		    $key = substr(AUTH_SALT,0, mcrypt_get_key_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_ECB));
@@ -3236,7 +3348,10 @@ class ADIntegrationPlugin {
 			$this->_log(ADI_LOG_WARN,'Encrypting: mcrypt not installed.');
 			$encrypted_text = $text;
 		}
+		
 		return base64_encode($encrypted_text);
+		*/
+		return base64_encode($text);
 	}
 
 	
@@ -3246,7 +3361,9 @@ class ADIntegrationPlugin {
 	 * @param string $encrypted_text data to decrypt
 	 */
 	protected function _decrypt($encrypted_text) {
+		
 		$encrypted_text = base64_decode($encrypted_text);
+		/*
 		if (function_exists('mcrypt_decrypt')) {
 		    $iv = md5('Active-Directory-Integration');
 		    $key = substr(AUTH_SALT,0, mcrypt_get_key_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_ECB));
@@ -3255,6 +3372,8 @@ class ADIntegrationPlugin {
 			$text = $encrypted_text; 
 		}
 		return $text;
+		*/
+		return $encrypted_text;
 	}
 	
 	
@@ -3269,7 +3388,7 @@ class ADIntegrationPlugin {
 			echo '[' .$level . '] '.$info."\n\r";
 		}
 		if (WP_DEBUG) {
-			if ($fh = @fopen($this->_logfile,'a+')) {
+			if ($fh = fopen($this->_logfile,'a+')) {
 				fwrite($fh,'[' .$level . '] '.$info."\n");
 				fclose($fh);
 			}
