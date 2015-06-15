@@ -371,9 +371,12 @@ class ADIntegrationPlugin {
 				add_action('edit_user_profile_update', array(&$this, 'profile_update'));
 		    }
 			
+			add_action('personal_options_update', array(&$this, 'profile_update_directory_service'), 10, 1);
+			add_action('edit_user_profile_update', array(&$this, 'profile_update_directory_service'), 10, 1);
+			
 			// User registration validation (ie: check ADS for pre-existing username or email).
 			add_filter('registration_errors', array(&$this, 'registration_errors'), 10, 3);
-			
+			add_filter('user_profile_update_errors', array(&$this, 'user_profile_update_errors'), 10, 3);
 			
 			// TODO: auto_login feature must be tested
 			/*
@@ -631,6 +634,17 @@ class ADIntegrationPlugin {
 		}
 	}
 
+	/**
+	 *	Function that returns an appropriate value for the 'directory_service' metakey.
+	 */
+	public function get_service_name() {
+		if( !empty($this->_account_suffix) ) {
+			$service = explode(';', $this->_account_suffix);
+			if( count($service) > 0 && !empty($service[0]) ) return substr($service[0],1);
+		}
+		$servce = explode(';', $this->_domain_controllers);
+		return $service[0];
+	}
 	
 	/**
 	 * If the REMOTE_USER evironment is set, use it as the username.
@@ -1111,6 +1125,20 @@ class ADIntegrationPlugin {
 		}
 	}
 	
+	/**
+	 * Update directory_service in profile page to a set value.
+	 * Action(s): personal_options_update, edit_user_profile_update
+	 * 
+	 * @param object $user_id
+	 */
+	public function profile_update_directory_service($user_id)
+	{
+		if ( get_user_meta($user_id, 'adi_samaccountname', true ) || (isset($_POST['adi_samaccountname']) && ($_POST['adi_samaccountname'] != ''))) {
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
+		}
+	}
+	
+	
 	/*
 	 * Display the options for this plugin.
 	 */
@@ -1466,7 +1494,7 @@ class ADIntegrationPlugin {
 	}	
 	
 	//	Function that checks if email already exists in ADS database.
-	//	Returns false on error, or the number of results matching the email in ADS.
+	//	Returns false on error, or the results matching the email in ADS.
 	public function check_email( $email = '' ) {
 	
 		if( empty($email) ) return false;
@@ -1508,8 +1536,8 @@ class ADIntegrationPlugin {
 		//	NOTE:	user_info method returns false if no result found,
 		//			so return 0 instead of false to prevent scripts from thinking an error
 		//			occured.
-		if( isset($entries['count']) ) {
-			return $entries['count'];
+		if( isset($entries['count']) && $entries['count'] > 0 ) {
+			return $entries;
 		}
 		else {
 			return 0;
@@ -1521,7 +1549,7 @@ class ADIntegrationPlugin {
 	//	Note:	This method is an alias of the check_email method since the underlying
 	//			search function detects wheter the search needle is an email formatted
 	//			value or simply a username.
-	//	Returns false on error, or the number of results matching the email in ADS.
+	//	Returns false on error, or the results matching the email in ADS.
 	public function check_username( $username = '' ) {
 		return $this->check_email( $username );
 	}
@@ -1567,6 +1595,36 @@ class ADIntegrationPlugin {
 		}
 		elseif ( $result_email > 0 ) {
 			$errors->add('adi_access_error', __('This email address is already taken in ADS(' .$result_email. ').'));
+		}
+		
+		return $errors;
+		
+	}
+	
+	
+	/**
+	 * This function checks that if a user is created with an existing username/email
+	 * on the admin user creation page, those username/email match the same ldap record.
+	 *
+	 * Action(s): user_profile_update_errors
+	 */	
+	public function user_profile_update_errors( $errors, $update, $user ) {
+	
+		if( !is_object($errors) ) $errors = new WP_Error();
+		if( $update == true ) return $errors;
+
+		$entries = $this->check_username($user->user_login);
+		if( is_array($entries) && isset($entries[0]) ) {
+			if( !isset($entries[0]['mail']) || !isset($entries[0]['mail'][0]) || $entries[0]['mail'][0] != $user->user_email) {
+				$errors->add('adi_username_nomatch', __('Username already exist in Active Directory but provided email does not match account information.'));
+			}
+		}
+		
+		$entries = $this->check_username($user->user_email);
+		if( is_array($entries) && isset($entries[0]) ) {
+			if( !isset($entries[0]['samaccountname']) || !isset($entries[0]['samaccountname'][0]) || $entries[0]['samaccountname'][0] != $user->user_login) {
+				$errors->add('adi_email_nomatch', __('Email already exist in Active Directory but provided username does not match account information.'));
+			}
 		}
 		
 		return $errors;
@@ -2759,6 +2817,7 @@ class ADIntegrationPlugin {
 				return false;
 			}
 		} else {
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
 			update_user_meta($user_id, 'first_name', $info['givenname']);
 			update_user_meta($user_id, 'last_name', $info['sn']);
 			if ($this->_auto_update_description) {
@@ -2879,6 +2938,8 @@ class ADIntegrationPlugin {
 			$this->_log(ADI_LOG_FATAL,'Error updating user.');
 			die('Error updating user!');
 		} else {
+			$dc = explode(";",$this->_domain_controllers);
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
 			update_user_meta($user_id, 'first_name', $info['givenname']);
 			update_user_meta($user_id, 'last_name', $info['sn']);
 			if ($this->_auto_update_description) {
