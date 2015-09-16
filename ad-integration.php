@@ -379,8 +379,6 @@ class ADIntegrationPlugin {
 			add_filter('wpmu_validate_user_signup', array(&$this, 'wpmu_validate_user_signup'), 10, 1);
 			add_filter('user_profile_update_errors', array(&$this, 'user_profile_update_errors'), 10, 3);
 			
-			add_filter('email_exists', array(&$this, 'email_exists'), 10, 2);
-			
 			
 			// TODO: auto_login feature must be tested
 			/*
@@ -1549,18 +1547,6 @@ class ADIntegrationPlugin {
 	//	Returns false on error, or the results matching the email in ADS.
 	public function check_username( $username = '' ) {
 		return $this->check_email( $username );
-	}
-	
-	//	Filter that returns errors if email value already exists in database.
-	public function email_exists( $errors, $email = "" ) {
-		$result = $this->check_email($email);
-		if( $result === false ) {
-			$errors->add('user_email', __('Error while accessing ldap database for email.'));
-		}
-		elseif( $result != 0 ) {
-			$errors->add('user_email', __('This email address already exists in ldap database (email_exists).'));
-		}
-		return $errors;
 	}
 	
 	
@@ -3457,7 +3443,6 @@ class ADIntegrationPlugin {
 	 * @param string $text data to encrypt
 	 */
 	protected function _encrypt($text) {
-		/*
 		if (function_exists('mcrypt_encrypt')) {
 		    $iv = md5('Active-Directory-Integration'); // not nice
 		    $key = substr(AUTH_SALT,0, mcrypt_get_key_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_ECB));
@@ -3468,8 +3453,6 @@ class ADIntegrationPlugin {
 		}
 		
 		return base64_encode($encrypted_text);
-		*/
-		return base64_encode($text);
 	}
 
 	
@@ -3479,9 +3462,7 @@ class ADIntegrationPlugin {
 	 * @param string $encrypted_text data to decrypt
 	 */
 	protected function _decrypt($encrypted_text) {
-		
 		$encrypted_text = base64_decode($encrypted_text);
-		/*
 		if (function_exists('mcrypt_decrypt')) {
 		    $iv = md5('Active-Directory-Integration');
 		    $key = substr(AUTH_SALT,0, mcrypt_get_key_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_ECB));
@@ -3490,8 +3471,6 @@ class ADIntegrationPlugin {
 			$text = $encrypted_text; 
 		}
 		return $text;
-		*/
-		return $encrypted_text;
 	}
 	
 	
@@ -3506,7 +3485,7 @@ class ADIntegrationPlugin {
 			echo '[' .$level . '] '.$info."\n\r";
 		}
 		if (WP_DEBUG) {
-			if ($fh = fopen($this->_logfile,'a+')) {
+			if ($fh = @fopen($this->_logfile,'a+')) {
 				fwrite($fh,'[' .$level . '] '.$info."\n");
 				fclose($fh);
 			}
