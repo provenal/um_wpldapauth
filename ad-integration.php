@@ -374,9 +374,13 @@ class ADIntegrationPlugin {
 			add_action('personal_options_update', array(&$this, 'profile_update_directory_service'), 10, 1);
 			add_action('edit_user_profile_update', array(&$this, 'profile_update_directory_service'), 10, 1);
 			
-			// User registration validation (ie: check ADS for pre-existing username or email).
+			// User creation/update/registration validation (ie: check ADS for pre-existing username or email).
 			add_filter('registration_errors', array(&$this, 'registration_errors'), 10, 3);
+			add_filter('wpmu_validate_user_signup', array(&$this, 'wpmu_validate_user_signup'), 10, 1);
 			add_filter('user_profile_update_errors', array(&$this, 'user_profile_update_errors'), 10, 3);
+			
+			add_filter('email_exists', array(&$this, 'email_exists'), 10, 2);
+			
 			
 			// TODO: auto_login feature must be tested
 			/*
@@ -1494,7 +1498,8 @@ class ADIntegrationPlugin {
 	}	
 	
 	//	Function that checks if email already exists in ADS database.
-	//	Returns false on error, or the results matching the email in ADS.
+	//	Returns false on error, zero (0) if nothing found,
+	//	or the results matching the email in ADS if a match was found.
 	public function check_email( $email = '' ) {
 	
 		if( empty($email) ) return false;
@@ -1502,7 +1507,6 @@ class ADIntegrationPlugin {
 		// Log informations
 		$ad_username = $this->_bulkimport_user;
 		$ad_password = $this->_decrypt($this->_bulkimport_pwd);
-		//$ad_password = $this->_decrypt($this->_syncback_global_pwd);
 		$this->_log(ADI_LOG_INFO,"Username duplicate validation: Options for adLDAP connection:\n".
 					  "- base_dn: $this->_base_dn\n".
 					  "- domain_controllers: $this->_domain_controllers\n".
@@ -1528,14 +1532,7 @@ class ADIntegrationPlugin {
 			return false; 
 		}
 		$this->_log(ADI_LOG_DEBUG,'Connected to AD');
-		
 		$entries = $ad->user_info($email);
-		
-		
-		//	Return number of entries found, or 0
-		//	NOTE:	user_info method returns false if no result found,
-		//			so return 0 instead of false to prevent scripts from thinking an error
-		//			occured.
 		if( isset($entries['count']) && $entries['count'] > 0 ) {
 			return $entries;
 		}
@@ -1554,47 +1551,47 @@ class ADIntegrationPlugin {
 		return $this->check_email( $username );
 	}
 	
-	// Filter that voids username if it already exists in the external database table.
-	// Thus the caller that applied this filter prior to creating the username in WordPress
-	// will know it already exists.
-	public function can_create_username( $username = '' ) {
-	
-		if( empty($username) || $caller == "adi-auth" ) return;
-		if( $this->check_username($username) !== 0 ) $username = '';
-		
+	//	Filter that returns errors if email value already exists in database.
+	public function email_exists( $errors, $email = "" ) {
+		$result = $this->check_email($email);
+		if( $result === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for email.'));
+		}
+		elseif( $result != 0 ) {
+			$errors->add('user_email', __('This email address already exists in ldap database (email_exists).'));
+		}
+		return $errors;
 	}
 	
-	// Filter that voids email if it already exists in the external database table.
-	// Thus the caller that applied this filter prior to creating the email in WordPress
-	// will know it already exists.
-	public function can_create_email( $email = '' ) {
 	
-		if( empty($email) || $caller == "adi-auth" ) return;
-		if( $this->check_email($email) !== 0 ) $email = '';
-		
-	}
-	
-	// User registration validation (ie: check ADS for pre-existing username or email).
+	//	Hook: registration_errors
+	//
+	//	Triggered when user self-registers on single and multi-site.
+	//	Used to validate if username and email are already used separately by this directory service.
+	//	If both username and email belong to the same account, no error is generated.
 	public function registration_errors( $errors = NULL, $username = '', $email = '' ) {
-	
+		
 		if( !is_object($errors) ) $errors = new WP_Error();
-		if( empty($username) ) $errors->add('pp_db_empty_username', __('Username must be provided.'));
-		if( empty($email) ) $errors->add('pp_db_empty_email', __('Email address must be provided.'));
+		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
+		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
 		
-		$result_user = $this->check_username($username);
-		$result_email = $this->check_email($email);
-		
-		if ( $result_user === false ) {
-			$errors->add('adi_access_error', __('Error while accessing ldap database for username.'));
+		$entry = $this->check_username($username);
+		if ( $entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
 		}
-		elseif ( $result_user > 0 ) {
-			$errors->add('adi_username_exists', __('This username is already taken in ADS (' .$result_user. ').'));
+		elseif ( is_array($entry) && $entry['count'] > 0 ) {
+			//if( $entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+			//}
 		}
-		elseif ( $result_email === false ) {
-			$errors->add('adi_access_error', __('Error while accessing ldap database for email.'));
-		}
-		elseif ( $result_email > 0 ) {
-			$errors->add('adi_access_error', __('This email address is already taken in ADS(' .$result_email. ').'));
+		else {
+			$entry = $this->check_email($email);
+			if ( $entry === false ) {
+				$errors->add('user_email', __('Error while accessing ldap database for email.'));
+			}
+			elseif ( is_array($entry) and $entry['count'] > 0 ) {
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
+			}
 		}
 		
 		return $errors;
@@ -1602,28 +1599,88 @@ class ADIntegrationPlugin {
 	}
 	
 	
-	/**
-	 * This function checks that if a user is created with an existing username/email
-	 * on the admin user creation page, those username/email match the same ldap record.
-	 *
-	 * Action(s): user_profile_update_errors
-	 */	
-	public function user_profile_update_errors( $errors, $update, $user ) {
-	
-		if( !is_object($errors) ) $errors = new WP_Error();
-		if( $update == true ) return $errors;
-
-		$entries = $this->check_username($user->user_login);
-		if( is_array($entries) && isset($entries[0]) ) {
-			if( !isset($entries[0]['mail']) || !isset($entries[0]['mail'][0]) || $entries[0]['mail'][0] != $user->user_email) {
-				$errors->add('adi_username_nomatch', __('Username already exist in Active Directory but provided email does not match account information.'));
+	//	Hook: wpmu_validate_user_signup
+	//
+	//	Triggered when user admin creates a user on multi-site environment.
+	//	Used to validate if username and email are already used separately by this directory service.
+	//	If both username and email belong to the same account, no error is generated.
+	public function wpmu_validate_user_signup( $result ) {
+		
+		$username = $result['user_name'];
+		$email = $result['user_email'];
+		$errors = &$result['errors'];
+		
+		if( !($errors instanceof WP_Error) ) die("adi-plugin:wpmu_validate_user_signup: exception triggered");
+		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
+		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
+		
+		$entry = $this->check_username($username);
+		if ( $entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
+		}
+		elseif ( is_array($entry) && $entry['count'] > 0 ) {
+			//if( $entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+			//}
+		}
+		else {
+			$entry = $this->check_email($email);
+			if ( $entry === false ) {
+				$errors->add('user_email', __('Error while accessing ldap database for email.'));
+			}
+			elseif ( is_array($entry) and $entry['count'] > 0 ) {
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
 			}
 		}
 		
-		$entries = $this->check_username($user->user_email);
+		return $result;
+		
+	}
+	
+	
+	//	Hook: user_profile_update_errors
+	//
+	//	Triggered when user admin creates a user on single-site environment,
+	//	or when a user profile is updated (single and multi-site).
+	//	Used to validate if username and email are already used separately by this directory service.
+	public function user_profile_update_errors( $errors, $update, $user ) {
+	
+		if( !is_object($errors) ) $errors = new WP_Error();
+		
+		if( $update ) {
+			$old_user = get_userdata($user->ID);
+			if( $old_user === false ) {
+				$errors->add('pp_db_user_update_error', __('Could not find user in Wordpress database.'));
+				return $errors; 
+			}
+		
+			if( !isset($user->user_login) || empty($user->user_login) ) {
+				$user->user_login = $old_user->user_login;
+			}
+		}
+		
+		$entries = $this->check_username($user->user_login);
+		if( $entries === false ) {
+			$errors->add('ldap_error', __('[user_profile_update_errors] Error while accessing ldap database.'));
+		}
 		if( is_array($entries) && isset($entries[0]) ) {
-			if( !isset($entries[0]['samaccountname']) || !isset($entries[0]['samaccountname'][0]) || $entries[0]['samaccountname'][0] != $user->user_login) {
-				$errors->add('adi_email_nomatch', __('Email already exist in Active Directory but provided username does not match account information.'));
+			//if( !isset($entries[0]['mail']) || !isset($entries[0]['mail'][0]) || $entries[0]['mail'][0] != $user->user_email) {
+			//	$errors->add('user_email', __('Username already exist in Active Directory but provided email does not match account information.'));
+			//}
+			if( $update ) {
+				$errors->add('user_login', __('Your account on Active Directory (SIM) cannot be edited from here.'));
+			}
+			else {
+				$errors->add('user_login', __('Username already exists in Active Directory.'));
+			}
+		}
+		else {
+			$entries = $this->check_username($user->user_email);
+			if( $entries === false ) {
+				$errors->add('ldap_error', __('Error while accessing ldap database.'));
+			}
+			if( is_array($entries) && isset($entries[0]) ) {
+				$errors->add('user_email', __('Email already exists in Active Directory.'));
 			}
 		}
 		
