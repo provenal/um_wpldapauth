@@ -1498,7 +1498,7 @@ class ADIntegrationPlugin {
 	//	Function that checks if email already exists in ADS database.
 	//	Returns false on error, zero (0) if nothing found,
 	//	or the results matching the email in ADS if a match was found.
-	public function check_email( $email = '' ) {
+	public function email_exists( $email = '' ) {
 	
 		if( empty($email) ) return false;
 		
@@ -1545,8 +1545,8 @@ class ADIntegrationPlugin {
 	//			search function detects wheter the search needle is an email formatted
 	//			value or simply a username.
 	//	Returns false on error, or the results matching the email in ADS.
-	public function check_username( $username = '' ) {
-		return $this->check_email( $username );
+	public function username_exists( $username = '' ) {
+		return $this->email_exists( $username );
 	}
 	
 	
@@ -1561,23 +1561,45 @@ class ADIntegrationPlugin {
 		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
 		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
 		
-		$entry = $this->check_username($username);
-		if ( $entry === false ) {
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
 			$errors->add('user_name', __('Error while accessing ldap database for username.'));
 		}
-		elseif ( is_array($entry) && $entry['count'] > 0 ) {
-			//if( $entry[0]['mail'][0] != $email ) {
-				$errors->add('user_name', __('This username already exists in ldap database.'));
-			//}
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
 		}
-		else {
-			$entry = $this->check_email($email);
-			if ( $entry === false ) {
-				$errors->add('user_email', __('Error while accessing ldap database for email.'));
-			}
-			elseif ( is_array($entry) and $entry['count'] > 0 ) {
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+		
+			//	Only admins can insert user accounts in WP that already exists in external DB.
+			//	Normal users should simply authenticate.
+			if( !is_admin() || !current_user_can('create_users') || $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
 				$errors->add('user_email', __('This email address already exists in ldap database.'));
 			}
+			
+		}
+		elseif( $user_exists ) {
+			$errors->add('user_name', __('This username already exists in ldap database.'));
+		}
+		elseif( $email_exists ) {
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {
+			//	OK!
 		}
 		
 		return $errors;
@@ -1600,23 +1622,45 @@ class ADIntegrationPlugin {
 		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
 		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
 		
-		$entry = $this->check_username($username);
-		if ( $entry === false ) {
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
 			$errors->add('user_name', __('Error while accessing ldap database for username.'));
 		}
-		elseif ( is_array($entry) && $entry['count'] > 0 ) {
-			//if( $entry[0]['mail'][0] != $email ) {
-				$errors->add('user_name', __('This username already exists in ldap database.'));
-			//}
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
 		}
-		else {
-			$entry = $this->check_email($email);
-			if ( $entry === false ) {
-				$errors->add('user_email', __('Error while accessing ldap database for email.'));
-			}
-			elseif ( is_array($entry) and $entry['count'] > 0 ) {
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+		
+			//	Only admins can insert user accounts in WP that already exists in external DB.
+			//	Normal users should simply authenticate.
+			if( !is_admin() || !current_user_can('create_users') || $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
 				$errors->add('user_email', __('This email address already exists in ldap database.'));
 			}
+			
+		}
+		elseif( $user_exists ) {
+			$errors->add('user_name', __('This username already exists in ldap database.'));
+		}
+		elseif( $email_exists ) {
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {
+			//	OK!
 		}
 		
 		return $result;
@@ -1636,38 +1680,64 @@ class ADIntegrationPlugin {
 		if( $update ) {
 			$old_user = get_userdata($user->ID);
 			if( $old_user === false ) {
-				$errors->add('pp_db_user_update_error', __('Could not find user in Wordpress database.'));
+				$errors->add('user_name', __('Could not find user in Wordpress database.', 'mysql-directory-service'));
 				return $errors; 
 			}
-		
 			if( !isset($user->user_login) || empty($user->user_login) ) {
 				$user->user_login = $old_user->user_login;
 			}
+			if( !isset($user->user_email) || empty($user->user_email) ) {
+				$user->user_email = $old_user->user_email;
+			}
 		}
 		
-		$entries = $this->check_username($user->user_login);
-		if( $entries === false ) {
-			$errors->add('ldap_error', __('[user_profile_update_errors] Error while accessing ldap database.'));
+		$username = $user->user_login;
+		$email = $user->user_email;
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
 		}
-		if( is_array($entries) && isset($entries[0]) ) {
-			//if( !isset($entries[0]['mail']) || !isset($entries[0]['mail'][0]) || $entries[0]['mail'][0] != $user->user_email) {
-			//	$errors->add('user_email', __('Username already exist in Active Directory but provided email does not match account information.'));
-			//}
-			if( $update ) {
-				$errors->add('user_login', __('Your account on Active Directory (SIM) cannot be edited from here.'));
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
+		}
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+			
+			if( $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
 			}
 			else {
-				$errors->add('user_login', __('Username already exists in Active Directory.'));
+				if( !$update && !is_admin() && !current_user_can('create_users') ) {
+					$errors->add('user_name', __('This username already exists in ldap database.'));
+					$errors->add('user_email', __('This email address already exists in ldap database.'));
+				}
+			}
+			
+		}
+		elseif( $user_exists ) {	//	Attempt to update email, address does not already exists.
+			if( !$update ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
 			}
 		}
-		else {
-			$entries = $this->check_username($user->user_email);
-			if( $entries === false ) {
-				$errors->add('ldap_error', __('Error while accessing ldap database.'));
-			}
-			if( is_array($entries) && isset($entries[0]) ) {
-				$errors->add('user_email', __('Email already exists in Active Directory.'));
-			}
+		elseif( $email_exists ) {	//	Attempt to create user but email address already exists.
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {	//	Attempt to create user, both username and email are not in use.
+			//	OK
 		}
 		
 		return $errors;
@@ -3451,7 +3521,6 @@ class ADIntegrationPlugin {
 			$this->_log(ADI_LOG_WARN,'Encrypting: mcrypt not installed.');
 			$encrypted_text = $text;
 		}
-		
 		return base64_encode($encrypted_text);
 	}
 
