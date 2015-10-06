@@ -1,14 +1,16 @@
 ﻿=== Active Directory Integration ===
 Contributors: glatze
 Tags: authentication, active directory, ldap, authorization, security, windows
-Requires at least: 3.0
-Tested up to: 4.2.1
-Stable tag: 1.1.7
+Requires at least: 4.0
+Tested up to: 4.3
+Stable tag: 1.1.8
 
 Allows WordPress to authenticate, authorize, create and update users against Active Directory
 
 
 == Description ==
+
+**ATTENTION: If you are running a multisite environment you shouldn't update from 1.1.5 or lower to 1.1.6 or above. Since 1.1.6 the central settings apply for all sites. In the upcoming version 1.2 you can choose between installation wide and site specific settings.**
 
 This Plugin allows WordPress to authenticate, authorize, create and update users against an Active Directory Domain.
 
@@ -46,7 +48,7 @@ The latest major release 1.1 was sponsored by [VARA](http://vara.nl). Many thank
 
 = Requirements =
 
-* WordPress since 3.0
+* WordPress since 4.0
 * PHP 5
 * LDAP support
 * OpenSSL Support for TLS (recommended)
@@ -130,6 +132,9 @@ It is never a good idea to allow special characters in usernames! For ADI it won
 
 
 == Changelog ==
+
+= 1.1.8 =
+* FIX: A Password-Change-Mail is send after every Login. (Issue #0088. Thanks to Benny Vizens and conkidd for the bug report.)
 
 = 1.1.7 =
 * FIX: Not all options are stored in multisite environments. (Thanks to Mike Jones for the bug report.)
