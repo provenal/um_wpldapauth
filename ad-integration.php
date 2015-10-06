@@ -371,7 +371,15 @@ class ADIntegrationPlugin {
 				add_action('edit_user_profile_update', array(&$this, 'profile_update'));
 		    }
 			
-
+			add_action('personal_options_update', array(&$this, 'profile_update_directory_service'), 10, 1);
+			add_action('edit_user_profile_update', array(&$this, 'profile_update_directory_service'), 10, 1);
+			
+			// User creation/update/registration validation (ie: check ADS for pre-existing username or email).
+			add_filter('registration_errors', array(&$this, 'registration_errors'), 10, 3);
+			add_filter('wpmu_validate_user_signup', array(&$this, 'wpmu_validate_user_signup'), 10, 1);
+			add_filter('user_profile_update_errors', array(&$this, 'user_profile_update_errors'), 10, 3);
+			
+			
 			// TODO: auto_login feature must be tested
 			/*
 			if ($this->_auto_login) {
@@ -628,6 +636,17 @@ class ADIntegrationPlugin {
 		}
 	}
 
+	/**
+	 *	Function that returns an appropriate value for the 'directory_service' metakey.
+	 */
+	public function get_service_name() {
+		if( !empty($this->_account_suffix) ) {
+			$service = explode(';', $this->_account_suffix);
+			if( count($service) > 0 && !empty($service[0]) ) return substr($service[0],1);
+		}
+		$servce = explode(';', $this->_domain_controllers);
+		return $service[0];
+	}
 	
 	/**
 	 * If the REMOTE_USER evironment is set, use it as the username.
@@ -1108,6 +1127,20 @@ class ADIntegrationPlugin {
 		}
 	}
 	
+	/**
+	 * Update directory_service in profile page to a set value.
+	 * Action(s): personal_options_update, edit_user_profile_update
+	 * 
+	 * @param object $user_id
+	 */
+	public function profile_update_directory_service($user_id)
+	{
+		if ( get_user_meta($user_id, 'adi_samaccountname', true ) || (isset($_POST['adi_samaccountname']) && ($_POST['adi_samaccountname'] != ''))) {
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
+		}
+	}
+	
+	
 	/*
 	 * Display the options for this plugin.
 	 */
@@ -1461,7 +1494,256 @@ class ADIntegrationPlugin {
 		
 		return $value;
 	}	
+	
+	//	Function that checks if email already exists in ADS database.
+	//	Returns false on error, zero (0) if nothing found,
+	//	or the results matching the email in ADS if a match was found.
+	public function email_exists( $email = '' ) {
+	
+		if( empty($email) ) return false;
 		
+		// Log informations
+		$ad_username = $this->_bulkimport_user;
+		$ad_password = $this->_decrypt($this->_bulkimport_pwd);
+		$this->_log(ADI_LOG_INFO,"Username duplicate validation: Options for adLDAP connection:\n".
+					  "- base_dn: $this->_base_dn\n".
+					  "- domain_controllers: $this->_domain_controllers\n".
+					  "- ad_username: $ad_username\n".
+					  "- ad_password: **not shown**\n".
+					  "- ad_port: $this->_port\n".
+					  "- use_tls: ".(int) $this->_use_tls."\n".
+					  "- network timeout: ". $this->_network_timeout);
+					
+		try {
+			$ad =  @new adLDAP(array(
+									"base_dn" => $this->_base_dn, 
+									"domain_controllers" => explode(';', $this->_domain_controllers),
+									"ad_username" => $ad_username,      // AD Bind User
+									"ad_password" => $ad_password,      // password
+									"ad_port" => $this->_port,          // AD port
+									"use_tls" => $this->_use_tls,             		// secure?
+									"network_timeout" => $this->_network_timeout	// network timeout
+									));
+		} catch (Exception $e) {
+			$this->_log(ADI_LOG_ERROR,'adLDAP exception: ' . $e->getMessage());
+			$this->errors->add('wrong_domaincontroller_password',__('Error on reading additional attributes from another user on Active Directory. Wrong password?','ad-integration'),'');
+			return false; 
+		}
+		$this->_log(ADI_LOG_DEBUG,'Connected to AD');
+		$entries = $ad->user_info($email);
+		if( isset($entries['count']) && $entries['count'] > 0 ) {
+			return $entries;
+		}
+		else {
+			return 0;
+		}
+		
+	}
+	
+	//	Function that checks if username already exists in ADS database.
+	//	Note:	This method is an alias of the check_email method since the underlying
+	//			search function detects wheter the search needle is an email formatted
+	//			value or simply a username.
+	//	Returns false on error, or the results matching the email in ADS.
+	public function username_exists( $username = '' ) {
+		return $this->email_exists( $username );
+	}
+	
+	
+	//	Hook: registration_errors
+	//
+	//	Triggered when user self-registers on single and multi-site.
+	//	Used to validate if username and email are already used separately by this directory service.
+	//	If both username and email belong to the same account, no error is generated.
+	public function registration_errors( $errors = NULL, $username = '', $email = '' ) {
+		
+		if( !is_object($errors) ) $errors = new WP_Error();
+		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
+		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
+		
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
+		}
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+		
+			//	Only admins can insert user accounts in WP that already exists in external DB.
+			//	Normal users should simply authenticate.
+			if( !is_admin() || !current_user_can('create_users') || $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
+			}
+			
+		}
+		elseif( $user_exists ) {
+			$errors->add('user_name', __('This username already exists in ldap database.'));
+		}
+		elseif( $email_exists ) {
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {
+			//	OK!
+		}
+		
+		return $errors;
+		
+	}
+	
+	
+	//	Hook: wpmu_validate_user_signup
+	//
+	//	Triggered when user admin creates a user on multi-site environment.
+	//	Used to validate if username and email are already used separately by this directory service.
+	//	If both username and email belong to the same account, no error is generated.
+	public function wpmu_validate_user_signup( $result ) {
+		
+		$username = $result['user_name'];
+		$email = $result['user_email'];
+		$errors = &$result['errors'];
+		
+		if( !($errors instanceof WP_Error) ) die("adi-plugin:wpmu_validate_user_signup: exception triggered");
+		if( empty($username) ) $errors->add('adi_empty_username', __('Username must be provided.'));
+		if( empty($email) ) $errors->add('adi_empty_email', __('Email address must be provided.'));
+		
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
+		}
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+		
+			//	Only admins can insert user accounts in WP that already exists in external DB.
+			//	Normal users should simply authenticate.
+			if( !is_admin() || !current_user_can('create_users') || $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
+			}
+			
+		}
+		elseif( $user_exists ) {
+			$errors->add('user_name', __('This username already exists in ldap database.'));
+		}
+		elseif( $email_exists ) {
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {
+			//	OK!
+		}
+		
+		return $result;
+		
+	}
+	
+	
+	//	Hook: user_profile_update_errors
+	//
+	//	Triggered when user admin creates a user on single-site environment,
+	//	or when a user profile is updated (single and multi-site).
+	//	Used to validate if username and email are already used separately by this directory service.
+	public function user_profile_update_errors( $errors, $update, $user ) {
+	
+		if( !is_object($errors) ) $errors = new WP_Error();
+		
+		if( $update ) {
+			$old_user = get_userdata($user->ID);
+			if( $old_user === false ) {
+				$errors->add('user_name', __('Could not find user in Wordpress database.', 'mysql-directory-service'));
+				return $errors; 
+			}
+			if( !isset($user->user_login) || empty($user->user_login) ) {
+				$user->user_login = $old_user->user_login;
+			}
+			if( !isset($user->user_email) || empty($user->user_email) ) {
+				$user->user_email = $old_user->user_email;
+			}
+		}
+		
+		$username = $user->user_login;
+		$email = $user->user_email;
+		$user_exists = false;
+		$email_exists = false;
+		
+		//	Checks if username exists.
+		$user_entry = $this->username_exists($username);
+		if( $user_entry === false ) {
+			$errors->add('user_name', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($user_entry) && count($user_entry) > 0 ) {
+			$user_exists = true;
+		}
+		
+		//	Checks if email exists.
+		$email_entry = $this->email_exists($email);
+		if( $email_entry === false ) {
+			$errors->add('user_email', __('Error while accessing ldap database for username.'));
+		}
+		elseif( is_array($email_entry) && count($email_entry) > 0 ) {
+			$email_exists = true;
+		}
+		
+		if( $user_exists && $email_exists ) {
+			
+			if( $user_entry[0]['mail'][0] != $email ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+				$errors->add('user_email', __('This email address already exists in ldap database.'));
+			}
+			else {
+				if( !$update && !is_admin() && !current_user_can('create_users') ) {
+					$errors->add('user_name', __('This username already exists in ldap database.'));
+					$errors->add('user_email', __('This email address already exists in ldap database.'));
+				}
+			}
+			
+		}
+		elseif( $user_exists ) {	//	Attempt to update email, address does not already exists.
+			if( !$update ) {
+				$errors->add('user_name', __('This username already exists in ldap database.'));
+			}
+		}
+		elseif( $email_exists ) {	//	Attempt to create user but email address already exists.
+			$errors->add('user_email', __('This email address already exists in ldap database.'));
+		}
+		else {	//	Attempt to create user, both username and email are not in use.
+			//	OK
+		}
+		
+		return $errors;
+		
+	}
+	
 	
 	/****************************************************************
 	 * STATIC FUNCTIONS
@@ -2648,6 +2930,7 @@ class ADIntegrationPlugin {
 				return false;
 			}
 		} else {
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
 			update_user_meta($user_id, 'first_name', $info['givenname']);
 			update_user_meta($user_id, 'last_name', $info['sn']);
 			if ($this->_auto_update_description) {
@@ -2773,6 +3056,8 @@ class ADIntegrationPlugin {
 			$this->_log(ADI_LOG_FATAL,'Error updating user.');
 			die('Error updating user!');
 		} else {
+			$dc = explode(";",$this->_domain_controllers);
+			update_user_meta($user_id, 'directory_service', $this->get_service_name());
 			update_user_meta($user_id, 'first_name', $info['givenname']);
 			update_user_meta($user_id, 'last_name', $info['sn']);
 			if ($this->_auto_update_description) {

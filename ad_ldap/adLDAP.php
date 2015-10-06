@@ -2430,7 +2430,6 @@ class adLDAP {
         $fields=array("samaccountname","distinguishedname");
         $sr=ldap_search($this->_conn,$this->_base_dn,$filter,$fields);
         $entries = ldap_get_entries($this->_conn, $sr);
-
         return $entries[0]['distinguishedname'][0];
      }
      
