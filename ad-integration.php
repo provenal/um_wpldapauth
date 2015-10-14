@@ -374,6 +374,9 @@ class ADIntegrationPlugin {
 			add_action('personal_options_update', array(&$this, 'profile_update_directory_service'), 10, 1);
 			add_action('edit_user_profile_update', array(&$this, 'profile_update_directory_service'), 10, 1);
 			
+			//	Custom filter hook to retreive user data from all directory services.
+			add_filter('read_user_records', array(&$this, 'read_user_records'), 10, 2);
+			
 			// User creation/update/registration validation (ie: check ADS for pre-existing username or email).
 			add_filter('registration_errors', array(&$this, 'registration_errors'), 10, 3);
 			add_filter('wpmu_validate_user_signup', array(&$this, 'wpmu_validate_user_signup'), 10, 1);
@@ -1549,6 +1552,77 @@ class ADIntegrationPlugin {
 		return $this->email_exists( $username );
 	}
 	
+	/**
+	 *	Returns a compound of user record data ordered by service and based on filters.
+	 */
+	public function read_user_records( $result, $filters=array() ) {
+		if( count($filters) == 0 ) return $result;
+		$login_email_processed = false;
+		$host = explode(';', $this->_domain_controllers)[0];
+		foreach( $filters as $key => $value ) {
+			switch($key) {
+				case 'user_login':
+					if( $login_email_processed ) {
+						break;
+					}
+					else {
+						$login_email_processed = true;
+					}
+					$entries = $this->username_exists($value);
+					if( isset($entries['count']) && $entries['count'] > 0 ) {
+						if( !isset($result['adi']) ) $result['adi'] = array();
+						foreach( $entries as $entry ) {
+							if( $entry['count'] < 1 ) continue;
+							if( array_key_exists('user_email', $filters) ) {
+								if( $entry['mail'][0] == $filters['user_email'] ) {
+									$result['adi'][] = array('host'=>$host, 'data'=>$entry);
+								}
+								else {
+									continue;
+								}
+							}
+							else {
+								$result['adi'][] = array('host'=>$host, 'data'=>$entry);
+							}
+							$entry['user_login'] = $entry['samaccountname'][0];
+							$entry['user_mail'] = $entry['mail'][0];
+						}
+					}
+					break;
+				case 'user_email':
+					if( $login_email_processed ) {
+						break;
+					}
+					else {
+						$login_email_processed = true;
+					}
+					$entries = $this->email_exists($value);
+					if( isset($entries['count']) && $entries['count'] > 0 ) {
+						if( !isset($result['adi']) ) $result['adi'] = array();
+						foreach( $entries as $entry ) {
+							if( $entry['count'] < 1 ) continue;
+							if( array_key_exists('user_login', $filters) ) {
+								if( $entry['samaccountname'][0] == $filters['user_login'] ) {
+									$result['adi'][] = array('host'=>$host, 'data'=>$entry);
+								}
+								else {
+									continue;
+								}
+							}
+							else {
+								$result['adi'][] = array('host'=>$host, 'data'=>$entry);
+							}
+							$entry['user_login'] = $entry['samaccountname'][0];
+							$entry['user_mail'] = $entry['mail'][0];
+						}
+					}
+					break;
+				default:
+					break;
+			}
+		}
+		return $result;
+	}
 	
 	//	Hook: registration_errors
 	//
